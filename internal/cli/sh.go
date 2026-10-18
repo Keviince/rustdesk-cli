@@ -119,7 +119,7 @@ func runShOneShot(opts hbb.DialOpts, command string, idle time.Duration) error {
 	}
 	defer ts.Close()
 
-	if _, err := ts.Write([]byte(command + "\n")); err != nil {
+	if _, err := ts.Write([]byte(command + "\r")); err != nil {
 		return err
 	}
 
