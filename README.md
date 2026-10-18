@@ -98,7 +98,7 @@ Saved peer passwords work too: `rdcli` understands the desktop app's encrypted `
 
 ### Headless account login
 
-`auth login` is available from source on `main` (`v0.1.2-dev`); the existing `v0.1.1` release binaries do not include it. It supports the `lejianwen/rustdesk-api` account-login protocol (`POST /api/login`) and compatible API servers. Use the API server URL, typically an HTTPS reverse proxy or API port `21114`, rather than the hbbs port `21116`.
+`auth login` is included starting with `v0.1.2`. It supports the `lejianwen/rustdesk-api` account-login protocol (`POST /api/login`) and compatible API servers. Use the API server URL, typically an HTTPS reverse proxy or API port `21114`, rather than the hbbs port `21116`.
 
 ```bash
 read -rs -p 'API account password: ' account_password
