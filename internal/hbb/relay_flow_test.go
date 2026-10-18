@@ -38,18 +38,19 @@ func relayFlowListeners(t *testing.T) (net.Listener, net.Listener) {
 }
 
 func mockAuthenticatedRendezvous(c net.Conn, privateKey ed25519.PrivateKey) (*SecureConn, error) {
+	sc := NewSecureConn(c)
 	kp, err := GenerateKeyPair()
 	if err != nil {
 		return nil, err
 	}
 	signed := append(ed25519.Sign(privateKey, kp.Pub), kp.Pub...)
-	err = writeRendezvousMessage(c, &pb.RendezvousMessage{Union: &pb.RendezvousMessage_KeyExchange{
+	err = writeRendezvousSecure(sc, &pb.RendezvousMessage{Union: &pb.RendezvousMessage_KeyExchange{
 		KeyExchange: &pb.KeyExchange{Keys: [][]byte{signed}},
 	}})
 	if err != nil {
 		return nil, err
 	}
-	msg, err := readRendezvousMessage(c)
+	msg, err := readRendezvousSecure(sc)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +62,6 @@ func mockAuthenticatedRendezvous(c net.Conn, privateKey ed25519.PrivateKey) (*Se
 	if err != nil {
 		return nil, err
 	}
-	sc := NewSecureConn(c)
 	sc.SetKey(key)
 	return sc, nil
 }
@@ -245,7 +245,12 @@ func TestTerminalRelayFlow(t *testing.T) {
 			}
 			ts, err := OpenTerminal(opts, 24, 80)
 			if err != nil {
-				t.Fatalf("OpenTerminal: %v", err)
+				select {
+				case fixtureErr := <-errs:
+					t.Fatalf("OpenTerminal: %v; fixture: %v", err, fixtureErr)
+				default:
+					t.Fatalf("OpenTerminal: %v", err)
+				}
 			}
 			defer ts.Close()
 			if !ts.conn.sc.IsSecured() || ts.conn.Direct() {
