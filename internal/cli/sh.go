@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -25,11 +28,21 @@ func newShCmd() *cobra.Command {
 		Short: "remote shell session or command execution",
 		RunE:  runSh,
 	}
-	cmd.Flags().Duration("idle", oneShotIdle, "one-shot idle timeout after output")
+	cmd.Flags().Duration("idle", oneShotIdle, "one-shot idle timeout after output (0 disables; wait for remote shell to close)")
+	cmd.Flags().Duration("command-timeout", 30*time.Minute, "Windows command execution timeout (0 disables; ignored with --idle)")
 	return cmd
 }
 
 func runSh(cmd *cobra.Command, args []string) error {
+	idle, _ := cmd.Flags().GetDuration("idle")
+	if idle < 0 {
+		return usageErrorf("--idle must be nonnegative (0 disables the idle timeout)")
+	}
+	commandTimeout, _ := cmd.Flags().GetDuration("command-timeout")
+	if commandTimeout < 0 {
+		return usageErrorf("--command-timeout must be nonnegative (0 disables the execution timeout)")
+	}
+
 	peerID, password, remArgs, err := resolveTarget(cmd, args)
 	if err != nil {
 		return err
@@ -38,8 +51,7 @@ func runSh(cmd *cobra.Command, args []string) error {
 
 	if len(remArgs) > 0 {
 		command := strings.Join(remArgs, " ")
-		idle, _ := cmd.Flags().GetDuration("idle")
-		return runShOneShot(opts, command, idle)
+		return runShOneShot(cmd, opts, command, idle, commandTimeout)
 	}
 
 	return runShInteractive(opts)
@@ -92,25 +104,25 @@ func runShInteractive(opts hbb.DialOpts) error {
 		}
 	}()
 
-	buf := make([]byte, 4096)
-	for {
-		n, err := ts.Read(buf)
-		if n > 0 {
-			os.Stdout.Write(buf[:n])
-		}
-		if err != nil {
-			break
-		}
-	}
+	return copyShInteractiveOutput(ts, os.Stdout)
+}
 
+func copyShInteractiveOutput(terminal io.Reader, output io.Writer) error {
+	if _, err := io.Copy(output, terminal); err != nil {
+		return fmt.Errorf("remote terminal: %w", err)
+	}
 	return nil
 }
 
-func runShOneShot(opts hbb.DialOpts, command string, idle time.Duration) error {
+func runShOneShot(cmd *cobra.Command, opts hbb.DialOpts, command string, idle, commandTimeout time.Duration) error {
 	cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil || cols <= 0 || rows <= 0 {
 		cols = 80
 		rows = 24
+	}
+	// Keep completion records on one line even in a narrow local terminal.
+	if cols < 80 {
+		cols = 80
 	}
 
 	ts, err := hbb.OpenTerminal(opts, uint32(rows), uint32(cols))
@@ -118,41 +130,64 @@ func runShOneShot(opts hbb.DialOpts, command string, idle time.Duration) error {
 		return err
 	}
 	defer ts.Close()
+	if strings.EqualFold(ts.PeerInfo().GetPlatform(), "Windows") && !cmd.Flags().Changed("idle") {
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+		defer stop()
+		return runWindowsCommand(ctx, ts, cmd.OutOrStdout(), command, commandTimeout)
+	}
 
 	if _, err := ts.Write([]byte(command + "\r")); err != nil {
 		return err
 	}
 
-	if idle <= 0 {
-		idle = oneShotIdle
-	}
+	return copyShOneShotOutput(ts, cmd.OutOrStdout(), idle)
+}
 
-	outCh := make(chan []byte, 100)
-	errCh := make(chan error, 1)
+// The caller must close the terminal after this returns to unblock a pending Read.
+func copyShOneShotOutput(terminal io.Reader, output io.Writer, idle time.Duration) error {
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	results := make(chan readResult, 1)
+	done := make(chan struct{})
+	defer close(done)
 
 	go func() {
 		for {
 			buf := make([]byte, 4096)
-			n, err := ts.Read(buf)
-			if n > 0 {
-				chunk := make([]byte, n)
-				copy(chunk, buf[:n])
-				outCh <- chunk
+			n, err := terminal.Read(buf)
+			if n > 0 || err != nil {
+				select {
+				case results <- readResult{data: buf[:n], err: err}:
+				case <-done:
+					return
+				}
 			}
 			if err != nil {
-				errCh <- err
 				return
 			}
 		}
 	}()
 
 	start := time.Now()
-	firstOutput := false
 	var idleC <-chan time.Time
 	var idleTimer *time.Timer
+	defer func() {
+		if idleTimer != nil {
+			idleTimer.Stop()
+		}
+	}()
 	armIdle := func() {
+		if idle == 0 {
+			return
+		}
+		wait := idle
+		if remaining := oneShotMinWait - time.Since(start); remaining > wait {
+			wait = remaining
+		}
 		if idleTimer == nil {
-			idleTimer = time.NewTimer(idle)
+			idleTimer = time.NewTimer(wait)
 		} else {
 			if !idleTimer.Stop() {
 				select {
@@ -160,31 +195,32 @@ func runShOneShot(opts hbb.DialOpts, command string, idle time.Duration) error {
 				default:
 				}
 			}
-			idleTimer.Reset(idle)
+			idleTimer.Reset(wait)
 		}
 		idleC = idleTimer.C
 	}
 
 	for {
 		select {
-		case chunk := <-outCh:
-			os.Stdout.Write(chunk)
-			firstOutput = true
-			armIdle()
-		case <-errCh:
-			for {
-				select {
-				case chunk := <-outCh:
-					os.Stdout.Write(chunk)
-				default:
-					return nil
+		case result := <-results:
+			if len(result.data) > 0 {
+				n, err := output.Write(result.data)
+				if err != nil {
+					return fmt.Errorf("write terminal output: %w", err)
 				}
+				if n != len(result.data) {
+					return fmt.Errorf("write terminal output: %w", io.ErrShortWrite)
+				}
+				armIdle()
 			}
-		case <-idleC:
-			if firstOutput && time.Since(start) >= oneShotMinWait {
+			if result.err != nil {
+				if !errors.Is(result.err, io.EOF) {
+					return fmt.Errorf("read remote terminal: %w", result.err)
+				}
 				return nil
 			}
-			idleC = nil
+		case <-idleC:
+			return nil
 		}
 	}
 }

@@ -81,6 +81,7 @@ func TestTerminalRelayFlow(t *testing.T) {
 	for _, tc := range []struct {
 		name                                           string
 		force, derive, override, assigned, echo, token bool
+		longSession                                    bool
 	}{
 		{name: "empty acknowledgement", force: true},
 		{name: "echoed acknowledgement", force: true, echo: true},
@@ -89,6 +90,7 @@ func TestTerminalRelayFlow(t *testing.T) {
 		{name: "assigned relay", force: true, assigned: true},
 		{name: "override assigned relay", force: true, assigned: true, override: true},
 		{name: "authenticated rendezvous", force: true, token: true},
+		{name: "session outlives connection timeout", force: true, longSession: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			serverPub, serverPriv, _ := ed25519.GenerateKey(rand.Reader)
@@ -237,6 +239,9 @@ func TestTerminalRelayFlow(t *testing.T) {
 				}
 			}()
 			opts := DialOpts{Server: rv.Addr().String(), PeerID: "relay-peer", Password: "pw", Key: base64.StdEncoding.EncodeToString(serverPub), ForceRelay: tc.force, Timeout: 3 * time.Second}
+			if tc.longSession {
+				opts.Timeout = time.Second
+			}
 			if tc.override {
 				opts.RelayServer = relayAddr
 			}
@@ -255,6 +260,9 @@ func TestTerminalRelayFlow(t *testing.T) {
 			defer ts.Close()
 			if !ts.conn.sc.IsSecured() || ts.conn.Direct() {
 				t.Fatal("expected encrypted relay session")
+			}
+			if tc.longSession {
+				time.Sleep(1500 * time.Millisecond)
 			}
 			input := []byte("whoami\n")
 			if _, err := ts.Write(input); err != nil {

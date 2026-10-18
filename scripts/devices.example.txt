@@ -1,0 +1,4 @@
+# RustDesk device ID followed by space or tab, then the device access password.
+# Blank lines and full-line comments are ignored. Do not quote passwords.
+# Everything after the separator is literal, including spaces, #, $ and quotes.
+1796087820 replace-with-device-password

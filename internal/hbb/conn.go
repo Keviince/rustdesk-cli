@@ -436,6 +436,10 @@ func Connect(opts DialOpts) (*Conn, error) {
 	}
 
 	c := &Conn{sc: sc, opts: opts, peerID: opts.PeerID, direct: direct}
+	if err := c.setSetupDeadline(); err != nil {
+		c.Close()
+		return nil, err
+	}
 	if err := c.secureHandshake(pr.signedIDPk, opts.Key); err != nil {
 		c.Close()
 		return nil, err
@@ -478,11 +482,12 @@ func connectDirect(opts DialOpts, timeout time.Duration) (*Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hbb: direct connect: %w", err)
 	}
-	if timeout > 0 {
-		_ = conn.SetDeadline(time.Now().Add(timeout))
-	}
 	sc := NewSecureConn(conn)
 	c := &Conn{sc: sc, opts: opts, peerID: opts.PeerID, direct: true}
+	if err := c.setSetupDeadline(); err != nil {
+		c.Close()
+		return nil, err
+	}
 	if err := c.secureHandshake(nil, opts.Key); err != nil {
 		c.Close()
 		return nil, err
@@ -495,6 +500,24 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+func (c *Conn) setSetupDeadline() error {
+	timeout := c.opts.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	if err := c.sc.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("hbb: set connection deadline: %w", err)
+	}
+	return nil
+}
+
+func (c *Conn) clearSetupDeadline() error {
+	if err := c.sc.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("hbb: clear connection deadline: %w", err)
+	}
+	return nil
 }
 
 // secureHandshake implements the SignedId/PublicKey exchange. If the peer
@@ -696,10 +719,15 @@ type LoginSpec struct {
 func (c *Conn) Login(kind LoginKind, spec LoginSpec) (*pb.PeerInfo, error) {
 	// The peer sends Hash{challenge, salt} immediately after the secure
 	// handshake, before we send our login request.
+	loginSent := false
 	for {
 		msg, err := c.Recv()
 		if err != nil {
-			return nil, err
+			var networkErr net.Error
+			if loginSent && c.opts.Password == "" && errors.As(err, &networkErr) && networkErr.Timeout() {
+				return nil, fmt.Errorf("peer login timed out without a device password; set --password or RDC_PASSWORD, or approve the connection on the peer: %w", err)
+			}
+			return nil, fmt.Errorf("receive peer login response: %w", err)
 		}
 		switch u := msg.GetUnion().(type) {
 		case *pb.Message_Hash:
@@ -731,6 +759,7 @@ func (c *Conn) Login(kind LoginKind, spec LoginSpec) (*pb.PeerInfo, error) {
 			}); err != nil {
 				return nil, err
 			}
+			loginSent = true
 		case *pb.Message_LoginResponse:
 			lr := u.LoginResponse
 			if errMsg := lr.GetError(); errMsg != "" {
@@ -739,6 +768,9 @@ func (c *Conn) Login(kind LoginKind, spec LoginSpec) (*pb.PeerInfo, error) {
 			pi := lr.GetPeerInfo()
 			if pi == nil {
 				return nil, errors.New("empty peer info in login response")
+			}
+			if err := c.clearSetupDeadline(); err != nil {
+				return nil, err
 			}
 			c.peerInfo = pi
 			return pi, nil

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	pb "rdcli/internal/hbb/proto"
 )
@@ -16,10 +17,11 @@ type TerminalSession struct {
 	rows   uint32
 	cols   uint32
 
-	mu     sync.Mutex
-	buf    []byte
-	closed bool
-	err    error
+	writeMu sync.Mutex
+	mu      sync.Mutex
+	buf     []byte
+	closed  bool
+	err     error
 }
 
 // OpenTerminal connects and opens a terminal session on the peer.
@@ -38,6 +40,10 @@ func OpenTerminal(opts DialOpts, rows, cols uint32) (*TerminalSession, error) {
 	if !terminalSupported(pi) {
 		conn.Close()
 		return nil, fmt.Errorf("remote terminal is not supported by the remote side (peer version %s, need 1.4.1 or higher)", pi.GetVersion())
+	}
+	if err := conn.setSetupDeadline(); err != nil {
+		conn.Close()
+		return nil, err
 	}
 
 	openMsg := &pb.Message{
@@ -83,6 +89,10 @@ func OpenTerminal(opts DialOpts, rows, cols uint32) (*TerminalSession, error) {
 						errMsg = "failed to open terminal"
 					}
 					return nil, errors.New(errMsg)
+				}
+				if err := conn.clearSetupDeadline(); err != nil {
+					conn.Close()
+					return nil, err
 				}
 				ts.termID = opened.GetTerminalId()
 				return ts, nil
@@ -171,7 +181,7 @@ func (ts *TerminalSession) Read(p []byte) (int, error) {
 				ts.mu.Unlock()
 			}
 		} else if td := msg.GetTestDelay(); td != nil {
-			_ = ts.conn.Send(&pb.Message{
+			_ = ts.send(&pb.Message{
 				Union: &pb.Message_TestDelay{TestDelay: td},
 			})
 		}
@@ -204,7 +214,7 @@ func (ts *TerminalSession) Write(p []byte) (int, error) {
 			},
 		},
 	}
-	if err := ts.conn.Send(msg); err != nil {
+	if err := ts.send(msg); err != nil {
 		return 0, err
 	}
 	return len(p), nil
@@ -235,7 +245,26 @@ func (ts *TerminalSession) Resize(rows, cols uint32) error {
 			},
 		},
 	}
+	return ts.send(msg)
+}
+
+// PeerInfo returns the authenticated peer's platform and capabilities.
+func (ts *TerminalSession) PeerInfo() *pb.PeerInfo {
+	return ts.conn.PeerInfo()
+}
+
+func (ts *TerminalSession) send(msg *pb.Message) error {
+	ts.writeMu.Lock()
+	defer ts.writeMu.Unlock()
 	return ts.conn.Send(msg)
+}
+
+// Abort immediately disconnects, interrupting blocked terminal reads and writes.
+func (ts *TerminalSession) Abort() error {
+	ts.mu.Lock()
+	ts.closed = true
+	ts.mu.Unlock()
+	return ts.conn.Close()
 }
 
 // Close closes the terminal session and the underlying connection.
@@ -243,7 +272,7 @@ func (ts *TerminalSession) Close() error {
 	ts.mu.Lock()
 	if ts.closed {
 		ts.mu.Unlock()
-		return nil
+		return ts.conn.Close()
 	}
 	ts.closed = true
 	termID := ts.termID
@@ -260,7 +289,9 @@ func (ts *TerminalSession) Close() error {
 			},
 		},
 	}
-	_ = ts.conn.Send(msg)
+	// A disconnected peer must not leave cleanup blocked on the close message.
+	_ = ts.conn.sc.SetWriteDeadline(time.Now().Add(time.Second))
+	_ = ts.send(msg)
 	return ts.conn.Close()
 }
 

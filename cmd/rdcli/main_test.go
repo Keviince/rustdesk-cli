@@ -22,6 +22,8 @@ func TestRun(t *testing.T) {
 		{[]string{"unknown-command"}, 2, "unknown command"},
 		{[]string{"--unknown-flag"}, 2, "unknown flag"},
 		{[]string{"--timeout=bad", "sh"}, 2, "invalid argument"},
+		{[]string{"sh", "--command-timeout=-1s"}, 2, "--command-timeout"},
+		{[]string{"sh", "--help"}, 0, "--command-timeout"},
 		{[]string{"auth", "set"}, 2, "usage:"},
 		{[]string{"sh"}, 2, "no machine specified"},
 	} {

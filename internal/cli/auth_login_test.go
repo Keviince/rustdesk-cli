@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"rdcli/internal/config"
+	pb "rdcli/internal/hbb/proto"
 )
 
 func loginTestConfig(t *testing.T) string {
@@ -29,6 +30,41 @@ func loginTestConfig(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestAuthLoginTokenReusedForMultipleShellTargets(t *testing.T) {
+	loginTestConfig(t)
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method != http.MethodPost || r.URL.Path != "/api/login" {
+			t.Errorf("unexpected login endpoint: %s %s", r.Method, r.URL.Path)
+		}
+		w.Write([]byte(`{"type":"access_token","access_token":"saved-login-token","user":{"name":"alice"}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("RDC_API_PASSWORD", "account-password")
+	t.Setenv("RDC_PASSWORD", "environment-peer-password")
+	if _, _, err := executeAuthTest([]string{"auth", "login", "--api-server", srv.URL, "-u", "alice"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ ref, password string }{{"123", "first-peer-password"}, {"456", "second-peer-password"}} {
+		cmd := NewRootCmd()
+		if err := cmd.ParseFlags([]string{"-c", tc.ref, "--password", tc.password}); err != nil {
+			t.Fatal(err)
+		}
+		peerID, password, remArgs, err := resolveTarget(cmd, []string{"whoami"})
+		if err != nil || peerID != tc.ref || len(remArgs) != 1 || remArgs[0] != "whoami" {
+			t.Fatalf("resolve shell target: id=%s args=%v err=%v", peerID, remArgs, err)
+		}
+		opts := dialOpts(cmd, peerID, password, pb.ConnType_TERMINAL)
+		if opts.Token != "saved-login-token" || opts.Password != tc.password || opts.Server != "rv.example.com:21116" || opts.Key != "server-key" {
+			t.Fatal("shell connection did not preserve login token, peer password or server settings")
+		}
+	}
+	if requests != 1 {
+		t.Fatalf("login called %d times, want once", requests)
+	}
 }
 
 func executeAuthTest(args []string, input string) (string, string, error) {

@@ -117,7 +117,9 @@ Server URLs ending in `/api` or `/api/login` are accepted, including a reverse-p
 
 `auth login --json` reports success without exposing the password or token. `auth status --json` masks the `token` field and reports the effective source (`flag`, `env`, `config`, or `gui`). A pre-existing `--token`/`RDC_TOKEN` still overrides the newly saved login token; clear that override to use the saved login. `auth logout` removes the saved token locally. Password-disabled/SSO-only deployments and additional-verification responses require an existing token via `auth set` or `auth import-gui`.
 
-Protocol references: lejianwen/rustdesk-api [`LoginForm`](https://github.com/lejianwen/rustdesk-api/blob/c5687e150615bfb00d9d105f0883a2802750a8ad/http/request/api/user.go) and [`Login`](https://github.com/lejianwen/rustdesk-api/blob/c5687e150615bfb00d9d105f0883a2802750a8ad/http/controller/api/login.go). Compatibility is tested with mock API servers; no real self-hosted server credentials were used.
+When a saved token expires or is revoked, run `auth login --password-stdin` again with the account password. The saved API URL, username and UUID are reused, and the new token replaces the old one only after a successful login. Login is explicit; commands do not automatically reauthenticate or retry an installation. `auth status` reports the presence and source of a token, without checking its validity with the server.
+
+Protocol references: lejianwen/rustdesk-api [`LoginForm`](https://github.com/lejianwen/rustdesk-api/blob/c5687e150615bfb00d9d105f0883a2802750a8ad/http/request/api/user.go) and [`Login`](https://github.com/lejianwen/rustdesk-api/blob/c5687e150615bfb00d9d105f0883a2802750a8ad/http/controller/api/login.go). Compatibility is covered by mock API tests and a real self-hosted login and Windows command session.
 
 ## Commands
 
@@ -151,6 +153,57 @@ Interactive PTY without a command; one-shot execution with one.
 rdcli -c home-pc sh
 rdcli -c home-pc sh "ipconfig /all"
 ```
+
+On **Windows peers**, one-shot mode runs the command in a separate Windows PowerShell process with `-NoProfile`, `-NonInteractive`, and `-EncodedCommand`. It streams plain text and waits for an explicit completion record, including through long download or installation pauses. Commands can contain pipes, quotes, variables, Unicode, and `exit`. The startup banner, encoded invocation echo, and internal start/completion records are hidden from output. Remote cursor, color, title and screen-clearing sequences are removed, PowerShell progress bars are disabled, and line endings are normalized to LF. Command-generated blank lines are preserved. A command failure reports its remote PowerShell process exit code on stderr and makes `rdcli` exit `1`; success exits `0`. A disconnect without a completion record reports an unknown result and exits `1`.
+
+`--command-timeout` limits Windows command execution from submission (default `30m`; `0` disables it). Negative values are rejected. Timeout or Ctrl+C disconnects the session and reports failure; commands are never automatically retried. Disconnecting cannot guarantee cancellation of an installer or other detached process already started on the peer.
+
+For example, from Bash, first log in to your `lejianwen/rustdesk-api` deployment using the existing `auth login` command, then execute your installer:
+
+```bash
+printf '%s' "$RDC_API_PASSWORD" | rdcli auth login \
+  --api-server "$RDC_API_SERVER" --username "$RDC_API_USERNAME" --password-stdin
+
+# RDC_SERVER / RDC_KEY (or config.toml) select your hbbs server and public key.
+# RDC_PASSWORD is the controlled device password, separate from the API password.
+# Place the helper next to rdcli; it handles the installer's UTF-8 response.
+./netbird-upgrade.sh home-pc
+```
+
+The saved login token is reused for subsequent device connections. A pre-existing `--token` or `RDC_TOKEN` overrides that saved token. Account login and remote execution use separate passwords; the API account password is not saved.
+
+For single-device upgrades, place `scripts/netbird-upgrade.sh` next to the built `rdcli` binary and run `./netbird-upgrade.sh <device-id>`. It uses the saved login and server settings. Supply the device password through `RDC_PASSWORD`, or enter it at the hidden prompt when running interactively. Without `RDC_PASSWORD`, non-interactive single-device runs fail immediately with exit `2`. The helper does not reuse the API account password, even if the two passwords have the same value, and does not save the entered password. It prints connection/download stage messages and forces a RustDesk relay connection so the upgrade does not depend on a direct connection through NetBird. `RDCLI_BIN` can select a different binary; `RDC_CONNECT_TIMEOUT` and `RDC_COMMAND_TIMEOUT` default to `30s` and `30m`.
+
+To read device IDs and access passwords from a UTF-8 text file, use `--file`. Each line contains a numeric device ID, one or more spaces or tabs, and its password. Blank lines and full-line `#` comments are ignored. Windows CRLF and an initial UTF-8 BOM are accepted. Passwords are literal: do not add shell quotes; spaces inside or at the end, `#`, `$`, quotes and backslashes are preserved. Leading separator whitespace is skipped. Duplicate IDs, missing passwords and malformed lines reject the entire file before any connection starts. See `scripts/devices.example.txt`:
+
+```text
+# ID         device access password
+1796087820   replace-with-device-password
+1234567890   another device password
+```
+
+```bash
+chmod 600 devices.txt
+./netbird-upgrade.sh --check --file devices.txt  # whoami on each device
+./netbird-upgrade.sh --file devices.txt          # upgrade each device
+./netbird-upgrade.sh --check 1796087820          # single-device connection check
+```
+
+File mode supplies each device password separately and reuses the saved API token for all devices. It executes in file order, continues after individual failures and never retries a device. Batch stage messages, command output and errors share stdout to preserve their order; each device result and the final success/failure counts follow on separate lines without extra blank separators. Output is streamed one line at a time, with a missing final newline supplied before the device result. The helper does not create log or summary files. A batch exits `0` only if all devices succeed, `1` for execution failures or interruption, and `2` for invalid input. Ctrl+C stops the batch before starting another device. On token expiry, log in again explicitly, then select the devices still requiring work; completed installations are not automatically repeated.
+
+Run the Linux helper regression tests with `python3 scripts/test_netbird_upgrade.py`. These use a fake `rdcli` and never run the installer.
+
+The helper downloads the existing installer as bytes, explicitly decodes UTF-8 and removes a leading BOM before execution. This avoids Windows PowerShell 5.1 misdecoding `irm ... | iex` responses without a UTF-8 charset. The hosted script is unchanged.
+
+Explicitly passing **`--idle` selects the legacy mode**, including on Windows. It sends the command to the existing remote shell without wrapping it. This mode closes after output is idle for the specified duration (with at least one second elapsed) and does not detect command completion or its exit status. `--idle 0` waits for the remote shell to close, so include `exit` when appropriate. `--command-timeout` does not apply to this legacy mode. Non-Windows peers retain the legacy default of `300ms`.
+
+```powershell
+rdcli -c home-pc sh --idle 0 "Start-Sleep -Seconds 5; Write-Output 'done'; exit"
+```
+
+One-shot mode does not forward stdin. PowerShell prompts such as `Read-Host` fail in the default Windows non-interactive mode; use `rdcli -c home-pc sh` when input is required. Windows commands run under the same account and privileges as the RustDesk terminal. An installer can still require desktop administrator approval: the NetBird script above uses `Start-Process -Verb RunAs -Wait`. Its failure prompt will produce a non-interactive error instead of waiting indefinitely. The supervisor waits only for the command process, allowing a NetBird UI process started by the script to remain running.
+
+`--timeout` bounds connection setup, login, and terminal opening. Once the terminal is open, that deadline is cleared so interactive sessions can run longer than the default `10s`. Terminal read failures are reported instead of silently returning to the local prompt. If an older binary disconnects after about ten seconds, rebuild or replace the binary on the machine running `rdcli`; increasing `--timeout` only extends that old binary's cutoff.
 
 ### `rdcli tunnel <ref> -L <lport>:<rhost>:<rport> [--once]`
 
@@ -257,7 +310,7 @@ rdcli --relay -c 123456789 sh "whoami"
 
 `--relay` forces a relay session. `--relay-server` and `RDC_RELAY` select its address without forcing relay use when a direct connection succeeds. Empty-host addresses such as `:21117`, URL schemes, and example placeholders are rejected. For a custom rendezvous port that does not map to relay port plus one, specify the relay explicitly. `RDC_DEBUG=1` prints connection diagnostics to stderr.
 
-Token import and `auth set` remain available alongside account login. The relay flows are covered by local protocol mocks; compatibility with your own server and Windows peer still needs a real-environment check.
+Token import and `auth set` remain available alongside account login. Local protocol mocks cover the relay flows. Account login, Windows command completion and failure reporting, and the NetBird upgrade helper have also been exercised through a relay against one `lejianwen/rustdesk-api` deployment and a Windows PowerShell 5.1 peer. Other deployments still need their own compatibility check.
 
 ## Exit codes
 
@@ -319,7 +372,7 @@ go test ./...
 go vet ./...
 ```
 
-Release builds for linux/darwin (amd64+arm64) are automated via GitHub Actions on `v*` tags after Linux and macOS build, test, and vet checks. Linux amd64 artifacts also run a version smoke check. Each release includes SHA-256 checksums.
+Pushes and pull requests run build, test and vet checks on Linux, macOS and Windows, plus the batch helper tests on Linux. GitHub Actions then uploads linux/darwin (amd64+arm64) binaries and the helper script as downloadable artifacts; untagged binaries report a `dev-<commit>` version. `v*` tags publish a release with SHA-256 checksums. Linux amd64 artifacts also run a version smoke check.
 
 ## License
 
