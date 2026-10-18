@@ -149,7 +149,7 @@ func TestConnectViaRelay(t *testing.T) {
 				if err != nil {
 					return
 				}
-				if msg.GetRequestRelay() != nil {
+				if msg.GetRequestRelay() != nil || msg.GetPunchHoleRequest() != nil {
 					signedPk := mustSignIDPk(t, serverPriv, "test-peer", peerPub)
 					resp := &pb.RendezvousMessage{
 						Union: &pb.RendezvousMessage_RelayResponse{

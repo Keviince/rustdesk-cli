@@ -15,16 +15,6 @@ import (
 
 const DefaultRendezvousServer = "rs-ny.rustdesk.com:21116"
 
-func normalizeServerAddr(server string) string {
-	if server == "" {
-		return DefaultRendezvousServer
-	}
-	if _, _, err := net.SplitHostPort(server); err != nil {
-		return net.JoinHostPort(server, "21116")
-	}
-	return server
-}
-
 func readRendezvousMessage(conn net.Conn) (*pb.RendezvousMessage, error) {
 	var readBuf []byte
 	tmp := make([]byte, 4096)
@@ -66,7 +56,10 @@ func PunchHole(
 	connType pb.ConnType,
 	timeout time.Duration,
 ) (peerAddr netip.AddrPort, pk []byte, relayServer string, natType pb.NatType, isLocal bool, err error) {
-	addr := normalizeServerAddr(server)
+	addr, err := normalizeRendezvous(server)
+	if err != nil {
+		return peerAddr, nil, "", pb.NatType_UNKNOWN_NAT, false, err
+	}
 
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
@@ -131,7 +124,11 @@ func QueryOnline(server string, peerIDs []string, timeout time.Duration) (map[st
 		return result, 0, nil
 	}
 
-	host, port, err := net.SplitHostPort(normalizeServerAddr(server))
+	addr, err := normalizeRendezvous(server)
+	if err != nil {
+		return nil, 0, err
+	}
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, 0, fmt.Errorf("hbb: invalid server %s: %w", server, err)
 	}
@@ -169,7 +166,7 @@ func QueryOnline(server string, peerIDs []string, timeout time.Duration) (map[st
 
 	states, latency, err := queryOnlineTCP(tcpAddr, framed, timeout)
 	if err != nil {
-		states, latency, err = queryOnlineTCP(normalizeServerAddr(server), framed, timeout)
+		states, latency, err = queryOnlineTCP(addr, framed, timeout)
 		if err != nil {
 			return nil, 0, err
 		}

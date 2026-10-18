@@ -186,16 +186,20 @@ func TestConnectAndLogin(t *testing.T) {
 	rvServer := runMockRendezvous(t, serverPriv, "test-peer", *peerAddr, peerPub)
 
 	c, err := Connect(DialOpts{
-		Server:   rvServer,
-		PeerID:   "test-peer",
-		Password: password,
-		Key:      base64.StdEncoding.EncodeToString(serverPub),
-		Timeout:  10 * time.Second,
+		Server:      rvServer,
+		RelayServer: "127.0.0.1:1",
+		PeerID:      "test-peer",
+		Password:    password,
+		Key:         base64.StdEncoding.EncodeToString(serverPub),
+		Timeout:     10 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}
 	defer c.Close()
+	if !c.Direct() {
+		t.Fatal("a relay address override must not force relay use")
+	}
 
 	pi, err := c.Login(LoginTunnel, LoginSpec{Host: "localhost", Port: 22})
 	if err != nil {

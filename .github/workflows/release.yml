@@ -2,14 +2,34 @@ name: release
 
 on:
   push:
+    branches: [main, 'codex/**']
     tags:
       - "v*"
+  pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  validate:
+    name: validate-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go test -timeout 3m ./...
+      - run: go vet ./...
+
   build:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: validate
     name: build-${{ matrix.goos }}-${{ matrix.goarch }}
     runs-on: ubuntu-latest
     strategy:
@@ -29,26 +49,35 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version-file: go.mod
 
       - name: Build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
-          ext=""
-          if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
-          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -trimpath -ldflags "-s -w -X rdcli/internal/cli.version=${{ github.ref_name }}" \
-            -o dist/rdcli-${{ matrix.goos }}-${{ matrix.goarch }}$ext ./cmd/rdcli
+          go build -trimpath -ldflags "-s -w -X rdcli/internal/cli.version=${GITHUB_REF_NAME}" \
+            -o "dist/rdcli-${GOOS}-${GOARCH}" ./cmd/rdcli
+
+      - name: Verify Linux binary version
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: test "$(./dist/rdcli-linux-amd64 version)" = "rdcli ${GITHUB_REF_NAME}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: rdcli-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/rdcli-*
+          if-no-files-found: error
 
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -57,9 +86,14 @@ jobs:
       - name: Checksums
         run: |
           cd dist
-          sha256sum * > checksums.txt
+          test "$(find . -maxdepth 1 -name 'rdcli-*' -type f | wc -l)" -eq 4
+          sha256sum rdcli-* > checksums.txt
+          sha256sum --check checksums.txt
 
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: docs/releases/${{ github.ref_name }}.md
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false

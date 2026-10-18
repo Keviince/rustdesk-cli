@@ -72,6 +72,7 @@ password = "pw2"
 		t.Fatalf("read saved config: %v", err)
 	}
 	want := `server = "srv.example.com:21116"
+relay_server = ""
 key = "lickey"
 access_token = ""
 api_server = "https://hbbs.example.com"

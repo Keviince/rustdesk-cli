@@ -6,14 +6,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "v0.1.0"
+var version = "v0.1.1"
 
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "print version",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Printf("rdcli %s\n", version)
+			fmt.Fprintf(cmd.OutOrStdout(), "rdcli %s\n", version)
 			return nil
 		},
 	}

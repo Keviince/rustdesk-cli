@@ -1,10 +1,11 @@
 # rdcli — headless RustDesk client CLI
 
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![Release](https://img.shields.io/github/v/release/4nkitd/rustdesk-cli)](https://github.com/4nkitd/rustdesk-cli/releases)
+[![Release](https://img.shields.io/github/v/release/Keviince/rustdesk-cli)](https://github.com/Keviince/rustdesk-cli/releases)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/4nkitd/rustdesk-cli/release.yml?label=release%20builds)](https://github.com/4nkitd/rustdesk-cli/actions)
-[![Stars](https://img.shields.io/github/stars/4nkitd/rustdesk-cli?style=social)](https://github.com/4nkitd/rustdesk-cli)
+[![CI](https://img.shields.io/github/actions/workflow/status/Keviince/rustdesk-cli/release.yml?label=release%20builds)](https://github.com/Keviince/rustdesk-cli/actions)
+
+This fork of [4nkitd/rustdesk-cli](https://github.com/4nkitd/rustdesk-cli) fixes self-hosted relay negotiation, adds explicit relay configuration, and restores the CLI build entry point. It retains the upstream AGPL-3.0 license.
 
 A pure-Go CLI that speaks the RustDesk wire protocol directly — no GUI, no official binary required. Connect to any RustDesk machine by ID, name, or tag and do real work: remote file transfer, TCP tunnels, and remote shells. Output is designed for both humans and AI agents (stable aligned tables + strict JSON).
 
@@ -33,19 +34,13 @@ RustDesk's public server now requires login, and the desktop GUI is the only off
 
 ## Install
 
-### Homebrew (macOS / Linux)
-
-```sh
-brew tap 4nkitd/tap
-brew trust 4nkitd/tap        # required on newer Homebrew for third-party taps
-brew install rustdesk-cli
-```
-
 ### Prebuilt binaries
 
-Grab the right `rdcli-<os>-<arch>` asset from [Releases](https://github.com/4nkitd/rustdesk-cli/releases), then:
+Grab the right `rdcli-<os>-<arch>` asset and `checksums.txt` from [this fork's Releases](https://github.com/Keviince/rustdesk-cli/releases). Linux and macOS builds are available for amd64 and arm64. Verify the downloaded asset, then install it:
 
 ```sh
+sha256sum --ignore-missing --check checksums.txt   # Linux
+# macOS: awk '$2 == "rdcli-darwin-arm64"' checksums.txt | shasum -a 256 -c -
 chmod +x rdcli-linux-amd64
 sudo mv rdcli-linux-amd64 /usr/local/bin/rdcli
 ```
@@ -53,7 +48,9 @@ sudo mv rdcli-linux-amd64 /usr/local/bin/rdcli
 ### From source
 
 ```sh
-go install github.com/4nkitd/rustdesk-cli/cmd/rdcli@latest
+git clone --branch v0.1.1 https://github.com/Keviince/rustdesk-cli.git
+cd rustdesk-cli
+go build -trimpath -o rdcli ./cmd/rdcli
 ```
 
 ## Quick start
@@ -175,6 +172,7 @@ Online check via the rendezvous server (exit 0 = online, 1 = offline).
 | `--password <pw>` | `RDC_PASSWORD` | Peer password |
 | `--token <tok>` | `RDC_TOKEN` | Login token (falls back to config / GUI) |
 | `--server <host:port>` | `RDC_SERVER` | Rendezvous server (default: rs-ny.rustdesk.com:21116) |
+| `--relay-server <host:port>` | `RDC_RELAY` | Relay server override; separate from `--relay` |
 | `--key <key>` | `RDC_KEY` | Licence key for self-hosted servers |
 | `--relay` | | Force relay, skip hole punching |
 | `--yes` | | Accept insecure direct-IP connections |
@@ -199,6 +197,7 @@ All output is a single JSON object on stdout; errors go to stderr; no progress/c
 
 ```toml
 server = ""               # empty = public rustdesk.com servers
+relay_server = ""         # empty = announced relay, then rendezvous host:port+1
 key = ""                  # self-hosted licence key
 access_token = ""         # public-server login token (see `rdcli auth`)
 
@@ -216,6 +215,23 @@ name = "home-pc"
 
 `rdcli import-gui` populates peers from your desktop app automatically. The config file is written with `0600` permissions.
 
+### Self-hosted relay configuration
+
+`server`, `relay_server`, and `key` use this order: nonempty command-line flag → environment variable → config file. An explicit relay address overrides the server's announcement. Without an override, the announced relay is used; if absent, the rendezvous host and its port plus one are used (normally `21116` → `21117`). A relay address without a port uses `21117`. IPv6 addresses with ports use brackets, such as `[2001:db8::1]:21117`.
+
+```sh
+export RDC_SERVER="rd.example.com:21116"
+export RDC_RELAY="relay.example.com:21117"  # independent relay or custom port
+export RDC_KEY="your-server-public-key"
+export RDC_TOKEN="your-login-token"        # for servers requiring login
+export RDC_PASSWORD="your-peer-password"
+rdcli --relay -c 123456789 sh "whoami"
+```
+
+`--relay` forces a relay session. `--relay-server` and `RDC_RELAY` select its address without forcing relay use when a direct connection succeeds. Empty-host addresses such as `:21117`, URL schemes, and example placeholders are rejected. For a custom rendezvous port that does not map to relay port plus one, specify the relay explicitly. `RDC_DEBUG=1` prints connection diagnostics to stderr.
+
+Token authentication is unchanged, including existing token import and `auth set`. This fork does not add username/password login to a server API. The v0.1.1 relay flows are covered by local protocol mocks; compatibility with your own server and Windows peer still needs a real-environment check.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -229,7 +245,7 @@ name = "home-pc"
 Honest list — read before you rely on it:
 
 - **No screen sharing, clipboard sync, or audio.** This is a headless client for file/terminal/tunnel work, not a full remote-desktop replacement.
-- **UDP NAT test is not implemented** — direct hole punching uses TCP only, so some symmetric-NAT peers fall back to relay. Relay always works.
+- **Direct hole punching uses TCP only**, so some symmetric-NAT peers require a reachable, correctly configured relay.
 - **Terminal requires peer ≥ 1.4.1** (older peers reject terminal sessions).
 - **Public server needs a login token** — same as the official client since RustDesk enabled mandatory login.
 - **Not affiliated with RustDesk.** An independent, clean-room-ish port of the wire protocol (see License).
@@ -276,7 +292,7 @@ go test ./...
 go vet ./...
 ```
 
-Release builds for linux/darwin/windows (amd64+arm64) are automated via GitHub Actions on `v*` tags.
+Release builds for linux/darwin (amd64+arm64) are automated via GitHub Actions on `v*` tags after Linux and macOS build, test, and vet checks. Linux amd64 artifacts also run a version smoke check. Each release includes SHA-256 checksums.
 
 ## License
 

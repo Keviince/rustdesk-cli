@@ -37,15 +37,16 @@ const (
 )
 
 type DialOpts struct {
-	Server     string
-	PeerID     string
-	Password   string
-	Key        string
-	Token      string
-	ForceRelay bool
-	Yes        bool
-	ConnType   pb.ConnType
-	Timeout    time.Duration
+	Server      string
+	RelayServer string
+	PeerID      string
+	Password    string
+	Key         string
+	Token       string
+	ForceRelay  bool
+	Yes         bool
+	ConnType    pb.ConnType
+	Timeout     time.Duration
 }
 
 type punchResult struct {
@@ -64,23 +65,6 @@ type Conn struct {
 	peerID   string
 	direct   bool
 	peerInfo *pb.PeerInfo
-}
-
-func normalizeRendezvous(server string) string {
-	if server == "" {
-		return DefaultRendezvousServer
-	}
-	if _, _, err := net.SplitHostPort(server); err != nil {
-		return net.JoinHostPort(server, "21116")
-	}
-	return server
-}
-
-func normalizeRelay(server string) string {
-	if _, _, err := net.SplitHostPort(server); err != nil {
-		return net.JoinHostPort(server, "21117")
-	}
-	return server
 }
 
 // secureTcp performs the hbbs KeyExchange handshake required when a login
@@ -151,11 +135,10 @@ func readRendezvousSecure(sc *SecureConn) (*pb.RendezvousMessage, error) {
 // peerAddr is invalid.
 func punch(server, peerID, key, token string, forceRelay bool, connType pb.ConnType, timeout time.Duration) (punchResult, error) {
 	var res punchResult
-	if forceRelay {
-		return res, nil
+	addr, err := normalizeRendezvous(server)
+	if err != nil {
+		return res, err
 	}
-
-	addr := normalizeRendezvous(server)
 	var lastErr error
 
 	natType := pb.NatType_UNKNOWN_NAT
@@ -163,6 +146,8 @@ func punch(server, peerID, key, token string, forceRelay bool, connType pb.ConnT
 		if nt, ntErr := TestNATType(server, minDuration(timeout, time.Second)); ntErr == nil {
 			natType = nt
 		}
+	} else {
+		natType = pb.NatType_SYMMETRIC
 	}
 
 	for i := 0; i < punchMaxTry; i++ {
@@ -263,6 +248,7 @@ func punch(server, peerID, key, token string, forceRelay bool, connType pb.ConnT
 				lastErr = fmt.Errorf("hbb: unexpected rendezvous message %T", u)
 			}
 		}
+		conn.Close()
 	}
 	if lastErr == nil {
 		lastErr = errors.New("no response from rendezvous server")
@@ -270,13 +256,16 @@ func punch(server, peerID, key, token string, forceRelay bool, connType pb.ConnT
 	return res, lastErr
 }
 
-// requestRelayViaRendezvous asks hbbs to assign a relay server for force-relay
-// connections.
-func requestRelayViaRendezvous(server, peerID, key, token string, timeout time.Duration) (string, string, []byte, error) {
-	addr := normalizeRendezvous(server)
+// The controlled peer receives this address and UUID through hbbs. Its
+// acknowledgement may omit both fields (RustDesk rendezvous_mediator.rs).
+func requestRelayViaRendezvous(opts DialOpts, relayServer string, secure bool, timeout time.Duration) (string, []byte, error) {
+	addr, err := normalizeRendezvous(opts.Server)
+	if err != nil {
+		return "", nil, err
+	}
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("hbb: connect rendezvous: %w", err)
+		return "", nil, fmt.Errorf("hbb: connect rendezvous: %w", err)
 	}
 	defer conn.Close()
 	if timeout > 0 {
@@ -286,45 +275,49 @@ func requestRelayViaRendezvous(server, peerID, key, token string, timeout time.D
 	req := &pb.RendezvousMessage{
 		Union: &pb.RendezvousMessage_RequestRelay{
 			RequestRelay: &pb.RequestRelay{
-				Id:          peerID,
+				Id:          opts.PeerID,
 				Uuid:        uuid,
-				RelayServer: "",
-				LicenceKey:  key,
-				Token:       token,
-				ConnType:    pb.ConnType_DEFAULT_CONN,
+				RelayServer: relayServer,
+				Secure:      secure,
+				LicenceKey:  opts.Key,
+				Token:       opts.Token,
+				ConnType:    opts.ConnType,
 			},
 		},
 	}
 	readMsg := func() (*pb.RendezvousMessage, error) { return readRendezvousMessage(conn) }
 	writeMsg := func(m *pb.RendezvousMessage) error { return writeRendezvousMessage(conn, m) }
-	if token != "" {
-		sc, scErr := secureTcp(conn, key)
+	if opts.Token != "" {
+		sc, scErr := secureTcp(conn, opts.Key)
 		if scErr != nil {
-			return "", "", nil, fmt.Errorf("hbb: secure rendezvous: %w", scErr)
+			return "", nil, fmt.Errorf("hbb: secure rendezvous: %w", scErr)
 		}
 		readMsg = func() (*pb.RendezvousMessage, error) { return readRendezvousSecure(sc) }
 		writeMsg = func(m *pb.RendezvousMessage) error { return writeRendezvousSecure(sc, m) }
 	}
 	if err := writeMsg(req); err != nil {
-		return "", "", nil, err
+		return "", nil, err
 	}
 	for i := 0; i < 12; i++ {
 		msg, err := readMsg()
 		if err != nil {
-			break
+			return "", nil, fmt.Errorf("hbb: read relay response: %w", err)
 		}
 		if rr := msg.GetRelayResponse(); rr != nil {
 			if rr.GetRefuseReason() != "" {
-				return "", "", nil, errors.New(rr.GetRefuseReason())
+				return "", nil, errors.New(rr.GetRefuseReason())
 			}
-			return rr.GetRelayServer(), rr.GetUuid(), rr.GetPk(), nil
+			return uuid, rr.GetPk(), nil
 		}
 	}
-	return "", "", nil, errors.New("timeout waiting for relay response")
+	return "", nil, errors.New("timeout waiting for relay response")
 }
 
 func connectRelay(relayServer, peerID, uuid, key string, connType pb.ConnType, timeout time.Duration) (*SecureConn, error) {
-	addr := normalizeRelay(relayServer)
+	addr, err := normalizeRelay(relayServer)
+	if err != nil {
+		return nil, fmt.Errorf("hbb: invalid relay: %w", err)
+	}
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("hbb: connect relay server: %w", err)
@@ -384,6 +377,13 @@ func Connect(opts DialOpts) (*Conn, error) {
 	if isDirectIP(opts.PeerID) {
 		return connectDirect(opts, timeout)
 	}
+	if opts.RelayServer != "" {
+		addr, err := normalizeRelay(opts.RelayServer)
+		if err != nil {
+			return nil, fmt.Errorf("hbb: invalid relay override: %w", err)
+		}
+		opts.RelayServer = addr
+	}
 
 	pr, err := punch(opts.Server, opts.PeerID, opts.Key, opts.Token, opts.ForceRelay, opts.ConnType, timeout)
 	if err != nil {
@@ -408,19 +408,25 @@ func Connect(opts DialOpts) (*Conn, error) {
 	}
 
 	if sc == nil {
-		relayServer := pr.relayServer
+		relayServer, rErr := selectRelay(opts.RelayServer, pr.relayServer, opts.Server)
+		if rErr != nil {
+			return nil, fmt.Errorf("hbb: select relay (set --relay-server or RDC_RELAY): %w", rErr)
+		}
 		uuid := pr.uuid
 		signedIDPk := pr.signedIDPk
-		if uuid == "" {
-			rs, u, pk, rErr := requestRelayViaRendezvous(opts.Server, opts.PeerID, opts.Key, opts.Token, timeout)
+		assignedRelay, _ := normalizeRelay(pr.relayServer)
+		if uuid == "" || assignedRelay != relayServer {
+			u, pk, rErr := requestRelayViaRendezvous(opts, relayServer, len(signedIDPk) > 0, timeout)
 			if rErr != nil {
 				return nil, rErr
 			}
-			relayServer = rs
 			uuid = u
 			if len(pk) > 0 {
 				signedIDPk = pk
 			}
+		}
+		if os.Getenv("RDC_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "hbb debug: using relay=%q\n", relayServer)
 		}
 		sc, err = connectRelay(relayServer, opts.PeerID, uuid, opts.Key, opts.ConnType, timeout)
 		if err != nil {

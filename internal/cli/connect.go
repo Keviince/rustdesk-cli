@@ -81,14 +81,15 @@ func dialOpts(cmd *cobra.Command, peerID, password string, connType pb.ConnType)
 		password = getPasswordFlag(cmd)
 	}
 	return hbb.DialOpts{
-		Server:     getServerFlag(cmd),
-		PeerID:     peerID,
-		Password:   password,
-		Key:        getKeyFlag(cmd),
-		Token:      getTokenFlag(cmd),
-		ForceRelay: isRelayFlag(cmd),
-		Yes:        isYesFlag(cmd),
-		ConnType:   connType,
-		Timeout:    getTimeoutFlag(cmd),
+		Server:      getServerFlag(cmd),
+		RelayServer: getRelayServerFlag(cmd),
+		PeerID:      peerID,
+		Password:    password,
+		Key:         getKeyFlag(cmd),
+		Token:       getTokenFlag(cmd),
+		ForceRelay:  isRelayFlag(cmd),
+		Yes:         isYesFlag(cmd),
+		ConnType:    connType,
+		Timeout:     getTimeoutFlag(cmd),
 	}
 }

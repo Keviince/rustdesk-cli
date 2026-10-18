@@ -1,5 +1,5 @@
 # build artifacts
-rdcli
+/rdcli
 mockrv
 mockapi
 dist/

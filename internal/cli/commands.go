@@ -7,6 +7,9 @@ func NewRootCmd() *cobra.Command {
 		Use:   "rdcli",
 		Short: "headless RustDesk client CLI",
 	}
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return usageErrorf("%s", err)
+	})
 	registerCommonFlags(root)
 	root.PersistentFlags().StringP("connect", "c", "", "machine ref (id, name, or tag)")
 

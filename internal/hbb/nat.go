@@ -1,5 +1,3 @@
-//go:build !windows
-
 package hbb
 
 import (
@@ -7,7 +5,6 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
-	"syscall"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -34,7 +31,10 @@ func dialPunch(local, peer netip.AddrPort, timeout time.Duration) (net.Conn, err
 // same local address, and compare the server-observed source ports. Equal
 // ports mean an asymmetric (cone) NAT; different ports mean symmetric.
 func TestNATType(server string, timeout time.Duration) (pb.NatType, error) {
-	addr := normalizeServerAddr(server)
+	addr, err := normalizeRendezvous(server)
+	if err != nil {
+		return pb.NatType_UNKNOWN_NAT, err
+	}
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		return pb.NatType_UNKNOWN_NAT, fmt.Errorf("hbb: invalid server %s: %w", server, err)
@@ -97,15 +97,4 @@ func TestNATType(server string, timeout time.Duration) (pb.NatType, error) {
 		return pb.NatType_ASYMMETRIC, nil
 	}
 	return pb.NatType_SYMMETRIC, nil
-}
-
-func reuseControl(network, address string, c syscall.RawConn) error {
-	var setErr error
-	err := c.Control(func(fd uintptr) {
-		setErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
-	})
-	if err != nil {
-		return err
-	}
-	return setErr
 }

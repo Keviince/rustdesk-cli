@@ -35,7 +35,7 @@ func newAuthCmd() *cobra.Command {
 	setCmd := &cobra.Command{
 		Use:   "set <token>",
 		Short: "set login token explicitly",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactArgs(1, "usage: rdcli auth set <token>"),
 		RunE:  runAuthSet,
 	}
 	cmd.AddCommand(statusCmd, importCmd, logoutCmd, setCmd)

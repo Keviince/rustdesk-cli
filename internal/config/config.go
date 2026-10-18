@@ -15,6 +15,7 @@ type Peer struct {
 
 type Config struct {
 	Server      string
+	RelayServer string
 	Key         string
 	AccessToken string
 	APIServer   string
@@ -105,6 +106,8 @@ func (c *Config) parse(data []byte) error {
 			switch key {
 			case "server":
 				c.Server = parseString(value)
+			case "relay_server":
+				c.RelayServer = parseString(value)
 			case "key":
 				c.Key = parseString(value)
 			case "access_token":
@@ -125,6 +128,9 @@ func (c *Config) Save() error {
 	var b strings.Builder
 	b.WriteString("server = ")
 	b.WriteString(quote(c.Server))
+	b.WriteByte('\n')
+	b.WriteString("relay_server = ")
+	b.WriteString(quote(c.RelayServer))
 	b.WriteByte('\n')
 	b.WriteString("key = ")
 	b.WriteString(quote(c.Key))

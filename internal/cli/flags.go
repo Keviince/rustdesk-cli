@@ -14,6 +14,7 @@ import (
 func registerCommonFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().String("password", "", "password for peer (env: RDC_PASSWORD)")
 	cmd.PersistentFlags().String("server", "", "rendezvous server override (env: RDC_SERVER)")
+	cmd.PersistentFlags().String("relay-server", "", "relay server override (env: RDC_RELAY)")
 	cmd.PersistentFlags().String("key", "", "licence key for self-hosted server (env: RDC_KEY)")
 	cmd.PersistentFlags().String("token", "", "login token (env: RDC_TOKEN)")
 	cmd.PersistentFlags().Bool("relay", false, "force relay connection")
@@ -72,7 +73,24 @@ func getServerFlag(cmd *cobra.Command) string {
 	if env := os.Getenv("RDC_SERVER"); env != "" {
 		return env
 	}
+	if cfg, err := config.Load(); err == nil && cfg.Server != "" {
+		return cfg.Server
+	}
 	return hbb.DefaultRendezvousServer
+}
+
+func getRelayServerFlag(cmd *cobra.Command) string {
+	val, _ := cmd.Flags().GetString("relay-server")
+	if val != "" {
+		return val
+	}
+	if env := os.Getenv("RDC_RELAY"); env != "" {
+		return env
+	}
+	if cfg, err := config.Load(); err == nil {
+		return cfg.RelayServer
+	}
+	return ""
 }
 
 func getKeyFlag(cmd *cobra.Command) string {
@@ -80,7 +98,13 @@ func getKeyFlag(cmd *cobra.Command) string {
 	if val != "" {
 		return val
 	}
-	return os.Getenv("RDC_KEY")
+	if env := os.Getenv("RDC_KEY"); env != "" {
+		return env
+	}
+	if cfg, err := config.Load(); err == nil {
+		return cfg.Key
+	}
+	return ""
 }
 
 func getTokenFlag(cmd *cobra.Command) string {
