@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/Keviince/rustdesk-cli/release.yml?label=release%20builds)](https://github.com/Keviince/rustdesk-cli/actions)
 
-This fork of [4nkitd/rustdesk-cli](https://github.com/4nkitd/rustdesk-cli) fixes self-hosted relay negotiation, adds explicit relay configuration, and restores the CLI build entry point. It retains the upstream AGPL-3.0 license.
+This fork of [4nkitd/rustdesk-cli](https://github.com/4nkitd/rustdesk-cli) fixes self-hosted relay negotiation, adds explicit relay configuration and headless API account login, and restores the CLI build entry point. It retains the upstream AGPL-3.0 license.
 
 A pure-Go CLI that speaks the RustDesk wire protocol directly — no GUI, no official binary required. Connect to any RustDesk machine by ID, name, or tag and do real work: remote file transfer, TCP tunnels, and remote shells. Output is designed for both humans and AI agents (stable aligned tables + strict JSON).
 
@@ -48,7 +48,7 @@ sudo mv rdcli-linux-amd64 /usr/local/bin/rdcli
 ### From source
 
 ```sh
-git clone --branch v0.1.1 https://github.com/Keviince/rustdesk-cli.git
+git clone --branch main https://github.com/Keviince/rustdesk-cli.git
 cd rustdesk-cli
 go build -trimpath -o rdcli ./cmd/rdcli
 ```
@@ -86,6 +86,7 @@ The public RustDesk server requires a login token. `rdcli` gets one from:
 
 ```sh
 rdcli auth status        # show login state, token source, user info
+rdcli auth login --help  # account login to a self-hosted API
 rdcli auth import-gui    # persist the desktop app's token into rdcli config
 rdcli auth set <token>   # set a token explicitly
 rdcli auth logout        # clear the stored token
@@ -94,6 +95,29 @@ rdcli auth logout        # clear the stored token
 With a token present, `rdcli` performs the full hbbs `KeyExchange` handshake (signed server key + NaCl box session) and sends the token as `PunchHoleRequest.token` — the same flow as the official client.
 
 Saved peer passwords work too: `rdcli` understands the desktop app's encrypted `00...` password blobs (decrypts them with the machine key like the GUI does) as well as plaintext passwords.
+
+### Headless account login
+
+`auth login` is available from source on `main` (`v0.1.2-dev`); the existing `v0.1.1` release binaries do not include it. It supports the `lejianwen/rustdesk-api` account-login protocol (`POST /api/login`) and compatible API servers. Use the API server URL, typically an HTTPS reverse proxy or API port `21114`, rather than the hbbs port `21116`.
+
+```bash
+read -rs -p 'API account password: ' account_password
+printf '\n'
+printf '%s' "$account_password" | rdcli auth login \
+  --api-server "https://api.example.com" --username alice --password-stdin
+unset account_password
+rdcli auth status
+```
+
+The command itself is non-interactive. For automation, `RDC_API_SERVER`, `RDC_API_USERNAME`, and `RDC_API_PASSWORD` can supply the login parameters. `--password`/`-p` on `auth login` means the **account password**; `RDC_PASSWORD` remains the **controlled peer password** and is never used for account login. `--password-stdin` takes precedence over the environment and cannot be combined with `--password`. `--timeout` limits the API request.
+
+On success, the command saves `access_token`, `login_server`, `login_username`, and a stable `login_uuid`. It does not save the supplied account password or alter `api_server`/address-book configuration. Subsequent logins reuse the saved server, username, and UUID; existing `api_server` and `api_username` are also accepted as initial defaults. Flags override `RDC_API_*`, which override saved settings. Login failures preserve the existing token and configuration.
+
+Server URLs ending in `/api` or `/api/login` are accepted, including a reverse-proxy path prefix. HTTPS verifies the server certificate; HTTP is allowed automatically for loopback addresses. An existing HTTP deployment on a trusted network can be selected explicitly with `--allow-http` on each login. Redirects are rejected so account passwords are not forwarded to another endpoint.
+
+`auth login --json` reports success without exposing the password or token. `auth status --json` masks the `token` field and reports the effective source (`flag`, `env`, `config`, or `gui`). A pre-existing `--token`/`RDC_TOKEN` still overrides the newly saved login token; clear that override to use the saved login. `auth logout` removes the saved token locally. Password-disabled/SSO-only deployments and additional-verification responses require an existing token via `auth set` or `auth import-gui`.
+
+Protocol references: lejianwen/rustdesk-api [`LoginForm`](https://github.com/lejianwen/rustdesk-api/blob/c5687e150615bfb00d9d105f0883a2802750a8ad/http/request/api/user.go) and [`Login`](https://github.com/lejianwen/rustdesk-api/blob/c5687e150615bfb00d9d105f0883a2802750a8ad/http/controller/api/login.go). Compatibility is tested with mock API servers; no real self-hosted server credentials were used.
 
 ## Commands
 
@@ -200,6 +224,9 @@ server = ""               # empty = public rustdesk.com servers
 relay_server = ""         # empty = announced relay, then rendezvous host:port+1
 key = ""                  # self-hosted licence key
 access_token = ""         # public-server login token (see `rdcli auth`)
+login_server = ""         # saved API login endpoint (auth login)
+login_username = ""       # saved API account name
+login_uuid = ""           # generated device identity reused across logins
 
 api_server = ""           # self-hosted Pro API base URL (address book)
 api_username = ""
@@ -230,7 +257,7 @@ rdcli --relay -c 123456789 sh "whoami"
 
 `--relay` forces a relay session. `--relay-server` and `RDC_RELAY` select its address without forcing relay use when a direct connection succeeds. Empty-host addresses such as `:21117`, URL schemes, and example placeholders are rejected. For a custom rendezvous port that does not map to relay port plus one, specify the relay explicitly. `RDC_DEBUG=1` prints connection diagnostics to stderr.
 
-Token authentication is unchanged, including existing token import and `auth set`. This fork does not add username/password login to a server API. The v0.1.1 relay flows are covered by local protocol mocks; compatibility with your own server and Windows peer still needs a real-environment check.
+Token import and `auth set` remain available alongside account login. The relay flows are covered by local protocol mocks; compatibility with your own server and Windows peer still needs a real-environment check.
 
 ## Exit codes
 

@@ -14,15 +14,18 @@ type Peer struct {
 }
 
 type Config struct {
-	Server      string
-	RelayServer string
-	Key         string
-	AccessToken string
-	APIServer   string
-	APIUsername string
-	APIPassword string
-	Peers       map[string]Peer
-	Tags        map[string][]string
+	Server        string
+	RelayServer   string
+	Key           string
+	AccessToken   string
+	LoginServer   string
+	LoginUsername string
+	LoginUUID     string
+	APIServer     string
+	APIUsername   string
+	APIPassword   string
+	Peers         map[string]Peer
+	Tags          map[string][]string
 }
 
 func Path() string {
@@ -112,6 +115,12 @@ func (c *Config) parse(data []byte) error {
 				c.Key = parseString(value)
 			case "access_token":
 				c.AccessToken = parseString(value)
+			case "login_server":
+				c.LoginServer = parseString(value)
+			case "login_username":
+				c.LoginUsername = parseString(value)
+			case "login_uuid":
+				c.LoginUUID = parseString(value)
 			case "api_server":
 				c.APIServer = parseString(value)
 			case "api_username":
@@ -138,6 +147,11 @@ func (c *Config) Save() error {
 	b.WriteString("access_token = ")
 	b.WriteString(quote(c.AccessToken))
 	b.WriteByte('\n')
+	for _, setting := range []struct{ key, value string }{
+		{"login_server", c.LoginServer}, {"login_username", c.LoginUsername}, {"login_uuid", c.LoginUUID},
+	} {
+		b.WriteString(setting.key + " = " + quote(setting.value) + "\n")
+	}
 	b.WriteString("api_server = ")
 	b.WriteString(quote(c.APIServer))
 	b.WriteByte('\n')
@@ -188,6 +202,9 @@ func (c *Config) Save() error {
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		return fmt.Errorf("config: write %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("config: permissions %s: %w", path, err)
 	}
 	return nil
 }

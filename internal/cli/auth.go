@@ -38,7 +38,7 @@ func newAuthCmd() *cobra.Command {
 		Args:  exactArgs(1, "usage: rdcli auth set <token>"),
 		RunE:  runAuthSet,
 	}
-	cmd.AddCommand(statusCmd, importCmd, logoutCmd, setCmd)
+	cmd.AddCommand(newAuthLoginCmd(), statusCmd, importCmd, logoutCmd, setCmd)
 	return cmd
 }
 
@@ -60,17 +60,21 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "auth: %v\n", err)
-		os.Exit(1)
-		return nil
+		return err
 	}
 	guiTok := config.GUIAccessToken()
 	guiPath := config.GUIAccessTokenPath()
 
 	source := ""
-	tok := cfg.AccessToken
+	tok, _ := cmd.Flags().GetString("token")
 	switch {
 	case tok != "":
+		source = "flag"
+	case os.Getenv("RDC_TOKEN") != "":
+		tok = os.Getenv("RDC_TOKEN")
+		source = "env"
+	case cfg.AccessToken != "":
+		tok = cfg.AccessToken
 		source = "config"
 	case guiTok != "":
 		tok = guiTok
@@ -82,34 +86,38 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 	st := authStatusJSON{
 		Version:     1,
 		LoggedIn:    tok != "",
-		Token:       tok,
+		Token:       maskToken(tok),
 		Source:      source,
 		GUIConfig:   guiPath,
 		RDCConfig:   config.Path(),
 		Server:      resolveServer(cmd, cfg),
-		UserInfo:    guiUserInfo(guiPath),
 		PasswordSet: len(cfg.Peers) > 0,
+	}
+	if tok == "" {
+		st.Token = ""
+	}
+	if source == "gui" {
+		st.UserInfo = guiUserInfo(guiPath)
 	}
 
 	if isJSONFlag(cmd) {
-		json.NewEncoder(os.Stdout).Encode(st)
-		return nil
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(st)
 	}
 
 	if st.LoggedIn {
-		fmt.Printf("logged in (%s)\n", source)
-		fmt.Printf("token:    %s\n", maskToken(tok))
+		fmt.Fprintf(cmd.OutOrStdout(), "logged in (%s)\n", source)
+		fmt.Fprintf(cmd.OutOrStdout(), "token:    %s\n", maskToken(tok))
 	} else {
-		fmt.Println("not logged in")
+		fmt.Fprintln(cmd.OutOrStdout(), "not logged in")
 	}
-	fmt.Printf("source:   %s\n", orDash(source))
-	fmt.Printf("gui cfg:  %s\n", orDash(guiPath))
-	fmt.Printf("rdc cfg:  %s\n", config.Path())
+	fmt.Fprintf(cmd.OutOrStdout(), "source:   %s\n", orDash(source))
+	fmt.Fprintf(cmd.OutOrStdout(), "gui cfg:  %s\n", orDash(guiPath))
+	fmt.Fprintf(cmd.OutOrStdout(), "rdc cfg:  %s\n", config.Path())
 	if st.UserInfo != "" {
-		fmt.Printf("user:     %s\n", st.UserInfo)
+		fmt.Fprintf(cmd.OutOrStdout(), "user:     %s\n", st.UserInfo)
 	}
 	if st.PasswordSet {
-		fmt.Printf("saved passwords: %d peer(s)\n", len(cfg.Peers))
+		fmt.Fprintf(cmd.OutOrStdout(), "saved passwords: %d peer(s)\n", len(cfg.Peers))
 	}
 	return nil
 }
@@ -120,23 +128,17 @@ func runAuthImport(cmd *cobra.Command, args []string) error {
 	}
 	tok := config.GUIAccessToken()
 	if tok == "" {
-		fmt.Fprintln(os.Stderr, "auth: no token found in RustDesk desktop app config")
-		os.Exit(1)
-		return nil
+		return fmt.Errorf("auth: no token found in RustDesk desktop app config")
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "auth: %v\n", err)
-		os.Exit(1)
-		return nil
+		return err
 	}
 	cfg.SetAccessToken(tok)
 	if err := cfg.Save(); err != nil {
-		fmt.Fprintf(os.Stderr, "auth: %v\n", err)
-		os.Exit(1)
-		return nil
+		return err
 	}
-	fmt.Printf("imported token from %s\n", config.GUIAccessTokenPath())
+	fmt.Fprintf(cmd.OutOrStdout(), "imported token from %s\n", config.GUIAccessTokenPath())
 	return nil
 }
 
@@ -146,21 +148,17 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "auth: %v\n", err)
-		os.Exit(1)
-		return nil
+		return err
 	}
 	if cfg.AccessToken == "" {
-		fmt.Println("no token stored")
+		fmt.Fprintln(cmd.OutOrStdout(), "no token stored")
 		return nil
 	}
 	cfg.SetAccessToken("")
 	if err := cfg.Save(); err != nil {
-		fmt.Fprintf(os.Stderr, "auth: %v\n", err)
-		os.Exit(1)
-		return nil
+		return err
 	}
-	fmt.Println("logged out")
+	fmt.Fprintln(cmd.OutOrStdout(), "logged out")
 	return nil
 }
 
@@ -173,7 +171,7 @@ func runAuthSet(cmd *cobra.Command, args []string) error {
 	if err := cfg.Save(); err != nil {
 		return err
 	}
-	fmt.Println("token saved")
+	fmt.Fprintln(cmd.OutOrStdout(), "token saved")
 	return nil
 }
 

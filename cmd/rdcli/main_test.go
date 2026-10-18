@@ -15,7 +15,9 @@ func TestRun(t *testing.T) {
 		code   int
 		output string
 	}{
-		{[]string{"version"}, 0, "rdcli v0.1.1"},
+		{[]string{"version"}, 0, "rdcli v0.1.2-dev"},
+		{[]string{"auth", "login", "--help"}, 0, "--password-stdin"},
+		{[]string{"auth", "login", "extra"}, 2, "usage:"},
 		{[]string{"--help"}, 0, "--relay-server"},
 		{[]string{"unknown-command"}, 2, "unknown command"},
 		{[]string{"--unknown-flag"}, 2, "unknown flag"},
